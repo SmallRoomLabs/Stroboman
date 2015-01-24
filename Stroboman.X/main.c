@@ -108,7 +108,6 @@
 #define LCD_DI_LOW      SPI_DATA=0
 #define LCD_DI_HIGH     SPI_DATA=1
 
-#define TOGGLECLK      Delay1TCY(); LCD_CLK_HIGH; Delay1TCY(); LCD_CLK_LOW; Delay1TCY();
 
 typedef struct {
     uint8_t lowestByte;
@@ -118,23 +117,21 @@ typedef struct {
 } t_4bytes;
 
 typedef union {
-    t_4bytes bytes;
-    uint32_t uint32;
+    t_4bytes u8;
+    uint32_t u32;
   } t_4bytes32;
 
 
 static volatile uint32_t tach;
-static volatile uint8_t timer_overflow;
-static volatile t_4bytes32 tachCount;
-static volatile uint8_t newRpmValue;
 
-void SpiDisable(void);
-void SpiEnable(void);
+static volatile uint8_t tach_overflow;
+static volatile uint8_t newTachData;
+static volatile t_4bytes32 tachData;
+
 uint8_t SpiSend(uint8_t data);
 void LcdInit(void);
 void LcdXY(uint8_t x, uint8_t y);
 void LcdClear(void);
-void LcdFill(void);
 void LcdCharacter(char ch);
 void LcdTinyDigit(char ch);
 void LcdString(char *string);
@@ -149,36 +146,15 @@ void SpiSetup() {
     SPI_CLOCK_TRIS=0;
     LCD_CE_HIGH;
 
-    SpiDisable();
-//    SSPSTATbits.SMP = 1;     // Sample setting
-//    SSPSTATbits.CKE = 0;    	// Set the bus mode 1,1
-//    SSPCON1bits.CKP = 1;
-//    SSPCON1bits.WCOL = 0;	// Clear the collision detection
-//// SPI Master at Fosc/16
-//    SSPCON1 = ((SSPCON1 & 0b11110000) | 0b00000001);
-
-    SSPCON1 = 0b00000001;                                           // clock SPI at Fosc / 16
-    SSPSTATbits.SMP = 0;
-    SSPSTATbits.CKE = 1;                                            // transmit data on rising edge of clock
-//    SpiEnable();
-}
-
-
-//
-//
-//
-void SpiDisable(void) {
-    SSPCON1bits.SSPEN=0;
+    SSPCON1 = 0b00000001;       // 
+    SSPSTATbits.SMP = 0;        //
+    SSPSTATbits.CKE = 1;        // transmit data on rising edge of clock
+    SSPCON1bits.SSPEN=0;        // Disable SPI
 }
 
 
 
-//
-//
-//
-void SpiEnable(void) {
-    SSPCON1bits.SSPEN=1;
-}
+
 
 
 //
@@ -201,9 +177,9 @@ void LcdSend(uint8_t cd, uint8_t data) {
     LCD_CLK_HIGH;
     NOP();
     LCD_CLK_LOW;
-    SpiEnable();
+    SSPCON1bits.SSPEN=1;        // Enable SPI
     SpiSend(data);
-    SpiDisable();
+    SSPCON1bits.SSPEN=0;        // Disable SPI
     LCD_CE_HIGH;                                  // Disable LCD ~CE
 }
 
@@ -221,6 +197,8 @@ void LcdXY(uint8_t x, uint8_t y) {
   LcdSend(LCD_C,0x00 | (x & 0x0F));
 }
 
+
+
 //
 //
 //
@@ -233,16 +211,6 @@ void LcdClear(void){
 }
 
 
-//
-//
-//
-void LcdFill(void) {
-  uint16_t i;
-  LcdXY(0,0);
-  for (i=0; i<96*9 ; i++) {
-    LcdSend(LCD_D, 0x00);
-  }
-}
 
 //
 // Send all the required initialization commands to the display
@@ -408,36 +376,67 @@ void LCD_BIG_CHAR(unsigned char row, unsigned char col, unsigned char chr){
 }
 
 
-
-
+#define LED25uS     19
+#define LED50uS     38
+#define LED75uS     56
+#define LED100uS    75
+#define LED125uS    94
+#define LED150uS    113
+#define LED175uS    131
+#define LED200uS    150
+#define LED225uS    169
+#define LED250uS    188
+#define LED275uS    206
+#define LED300uS    225
+#define LED325uS    244
+#define LED340uS    256
 
 
 
 void interrupt ISR() {
     static uint8_t rev=0;
+    static uint8_t led=0;
 
-    if(TMR0IE && TMR0IF) { //TMR0 Overflow
-            TMR0IF=0;
-            timer_overflow++;
-        }
+    // Timer0 is used to count the RPM of the motor
+    // At any decent speed it will overflow multiple times so
+    // we need to keep track of the number of overflows.
+    if (TMR0IF) {
+        tach_overflow++;
+        TMR0IF=0;       // Clear Timer0 interrupt flag
+    }
 
-        if (INT1IF) {   // Tach interrupt
-            if ((rev++) & 0x01) {
-                tachCount.bytes.lowestByte=TMR0L;
-                tachCount.bytes.lowByte=TMR0H;
-                tachCount.bytes.highByte=timer_overflow;
-                tachCount.bytes.highestByte=0;
-                TMR0H=0;
-                TMR0L=0;
-                timer_overflow=0;
-                newRpmValue=1;
-                LED=1;
-                Delay1KTCYx(1);
-                LED=0;
-            }
+    // HW Interrupt1 is connected to the tachometer to measure the 
+    // speed of the motor.
+    if (INT1IF) {
+        if ((rev++) & 0x01) {
+            // We have a full revolution of the motor, so grab the
+            // values from Timer0 plus its overflow counter and stick
+            // them into a variable for the RPM display routine in the
+            // main function.
+            tachData.u8.lowestByte=TMR0L;
+            tachData.u8.lowByte=TMR0H;
+            TMR0H=0;
+            TMR0L=0;
+            tachData.u8.highByte=tach_overflow;
+            tach_overflow=0;
+            tachData.u8.highestByte=0;
+            // Tell the RPM calculator that new measurement data is availabe
+            newTachData=1;
+            LED=1;
+            // Start the timer for turning off the LED
+            TMR2=0;             // The timer should start from zero
+            TMR2IF=0;           // Clear Timer2 interupt flag
+            TMR2IE=1;           // Enable Timer2 interrupts
+         }
+        INT1IF=0;       // Clear HW Interrupt 1 flag
+    }
 
-            INT1IF=0;
-        }
+    // Timer2 is used to turn off the LED after the desired ON-time
+    if (TMR2IF) {
+        LED=0;
+        TMR2IE=0;       // Disable Timer2 now the LED is turned off
+        TMR2IF=0;       // Clear Timer2 interrupt flag
+  }
 }
 
 #define AVGSIZE 32
@@ -468,13 +467,30 @@ void main(void) {
     TMR0ON=1;	// Start TIMER0
     TMR0IE=1;	// Enable TIMER0 Interrupt
 
+//    TMR3CS=0;   // Use clock from FCPU/4
+//    T3CKPS0=0;  // Prescale 1:1
+//    T3CKPS1=0;  // Prescale 1:1
+//    TMR3ON=1;	// Start TIMER0
+//    TMR3IE=1;	// Enable TIMER0 Interrupt
+
+
+    //
+    //http://eng-serve.com/pic/pic_timer.html
+    //
+    //Timer2 Registers Prescaler= 16 - TMR2 PostScaler = 1 - PR2 = 75 - Freq = 0.01 Hz - Period = 100.000000 seconds
+    T2CON = 0;        // bits 6-3 Post scaler 1:1 thru 1:16
+    TMR2ON = 1;  // bit 2 turn timer2 on;
+    T2CKPS1 = 1; // bits 1-0  Prescaler Rate Select bits
+    T2CKPS0 = 0;
+    PR2=LED125uS;         // PR2 (Timer2 Match value)
+    TMR2IF = 0;            // clear timer1 interupt flag TMR1IF
+    TMR2IE = 0;         // disable Timer2 interrupts
+
     INT1IE=1;   // Enable HW INT1 Interrupts
     INT1IF=0;
 
-
     PEIE=1;	// Enable Peripheral Interrupt
     GIE=1;	// Enable INTs globally
-
 
 
     uint32_t rpm,rpmTotal;
@@ -482,15 +498,16 @@ void main(void) {
     uint8_t avgPtr=0;
 
     for (;;) {
-        if (newRpmValue) {
-            newRpmValue=0;
-            rpmAvgArr[avgPtr]=(uint16_t)(1000.0/(((float)tachCount.uint32)/(12000.0*60.0)));
+
+        // If new readings are ready then process them
+        if (newTachData) {
+            newTachData=0;
+            rpmAvgArr[avgPtr]=(uint16_t)(1000.0/(((float)tachData.u32)/(12000.0*60.0)));
             avgPtr++;
             if (avgPtr>=AVGSIZE) avgPtr=0;
             rpmTotal=0;
             for (uint8_t i=0; i<AVGSIZE; i++) rpmTotal+=rpmAvgArr[i];
             rpm=rpmTotal/AVGSIZE;
-   //         LcdClear();
             LCD_BIG_CHAR(0, 0*14, (rpm/10000)%10);
             LCD_BIG_CHAR(0, 1*14, (rpm/1000)%10);
             LCD_BIG_CHAR(0, 2*14, (rpm/100)%10);
@@ -500,8 +517,7 @@ void main(void) {
             LCD_BIG_CHAR(20, 0*14, (avgPtr/100)%10);
             LCD_BIG_CHAR(20, 1*14, (avgPtr/10)%10);
             LCD_BIG_CHAR(20, 2*14, (avgPtr/1)%10);
-
         }
- //       for (int i=0; i<100; i++) Delay1KTCYx(100);
+
     }
 }
