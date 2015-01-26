@@ -128,6 +128,9 @@ static volatile uint8_t tach_overflow;
 static volatile uint8_t newTachData;
 static volatile t_4bytes32 tachData;
 
+static volatile uint16_t delay;
+
+
 uint8_t SpiSend(uint8_t data);
 void LcdInit(void);
 void LcdXY(uint8_t x, uint8_t y);
@@ -402,6 +405,7 @@ void interrupt ISR() {
     // we need to keep track of the number of overflows.
     if (TMR0IF) {
         tach_overflow++;
+            delay++;
         TMR0IF=0;       // Clear Timer0 interrupt flag
     }
 
@@ -422,14 +426,36 @@ void interrupt ISR() {
             tachData.u8.highestByte=0;
             // Tell the RPM calculator that new measurement data is availabe
             newTachData=1;
-            LED=1;
-            // Start the timer for turning off the LED
-            TMR2=0;             // The timer should start from zero
-            TMR2IF=0;           // Clear Timer2 interupt flag
-            TMR2IE=1;           // Enable Timer2 interrupts
+
+        LED=1;
+        // Start the timer for turning off the LED
+        TMR2=0;             // The timer should start from zero
+        TMR2IF=0;           // Clear Timer2 interupt flag
+        TMR2IE=1;           // Enable Timer2 interrupts
+            
+//            
+//            // Start delaying to turn on the LED
+//            TMR1H = delay>>8;    // preset for timer1 MSB register
+//            TMR1L = delay&0xFF;   // preset for timer1 LSB register
+//            TMR1IF=0;       // Clear Timer1 interrupt flag
+//            TMR1ON = 1;    // bit 0 = Enable Timer1 that turns on the LED
          }
         INT1IF=0;       // Clear HW Interrupt 1 flag
     }
+
+//    // Timer1 is used to turn on the LED after the desired delay
+//    if (TMR1IF) {
+//        // The turn on timer is a one-shot
+//        TMR1ON = 0;
+//        // Light up the led for the desired duration
+//        LED=1;
+//        // Start the timer for turning off the LED
+//        TMR2=0;             // The timer should start from zero
+//        TMR2IF=0;           // Clear Timer2 interupt flag
+//        TMR2IE=1;           // Enable Timer2 interrupts
+//
+//        TMR1IF=0;       // Clear Timer1 interrupt flag
+//    }
 
     // Timer2 is used to turn off the LED after the desired ON-time
     if (TMR2IF) {
@@ -457,6 +483,7 @@ void main(void) {
     SpiSetup();
     LcdInit();
     LcdClear();
+    LCD_BIG_CHAR(0, 0, 5);
     LED=0;
 
     IPEN=0;
@@ -466,6 +493,20 @@ void main(void) {
     T08BIT=0;	// 16 bit mode
     TMR0ON=1;	// Start TIMER0
     TMR0IE=1;	// Enable TIMER0 Interrupt
+
+//    //Timer1 Registers Prescaler= 1 - TMR1 Preset = 12662 - Freq = 0.23 Hz - Period = 4.406167 seconds
+//    T1CKPS1 = 0;   // bits 5-4  Prescaler Rate Select bits
+//    T1CKPS0 = 0;   // bit 4
+//    T1OSCEN = 1;   // bit 3 Timer1 Oscillator Enable Control bit 1 = on
+//    T1SYNC = 1;    // bit 2 Timer1 External Clock Input Synchronization Control bit...1 = Do not synchronize external clock input
+//    TMR1CS = 0;    // bit 1 Timer1 Clock Source Select bit...0 = Internal clock (FOSC/4)
+//    TMR1ON = 0;    // bit 0 = Disable timer
+//    TMR1IE=1;	   // Enable TIMER1 Interrupt
+//    delay=49*256+118;
+//    TMR1H = delay>>8;    // preset for timer1 MSB register
+//    TMR1L = delay&0xFF;   // preset for timer1 LSB register
+
+
 
 //    TMR3CS=0;   // Use clock from FCPU/4
 //    T3CKPS0=0;  // Prescale 1:1
